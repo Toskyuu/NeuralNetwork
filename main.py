@@ -1,40 +1,15 @@
-import glob
-import os
-import openpyxl
-import xlsxwriter
-
-from glob import glob
 import pandas as pd
 import tensorflow as tf
 import numpy as np
 import re
-from sklearn.metrics import mean_squared_error
 import math
 import matplotlib.pyplot as plt
+from keras.callbacks import EarlyStopping
+from sklearn.metrics import mean_squared_error
+from glob import glob
 
 
 
-def draw_curves(history, key1='accuracy', ylim1=(0.8, 1.00),
-                key2='loss', ylim2=(0.0, 1.0)):
-    plt.figure(figsize=(12, 4))
-
-    plt.subplot(1, 2, 1)
-    plt.plot(history.history[key1], "r--")
-    plt.plot(history.history['val_' + key1], "g--")
-    plt.ylabel(key1)
-    plt.xlabel('Epoch')
-    plt.ylim(ylim1)
-    plt.legend(['train', 'test'], loc='best')
-
-    plt.subplot(1, 2, 2)
-    plt.plot(history.history[key2], "r--")
-    plt.plot(history.history['val_' + key2], "g--")
-    plt.ylabel(key2)
-    plt.xlabel('Epoch')
-    plt.ylim(ylim2)
-    plt.legend(['train', 'test'], loc='best')
-
-    plt.show()
 
 def load_data(col_names: list, file_type: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     if file_type == 'dynamic':
@@ -51,7 +26,6 @@ def load_data(col_names: list, file_type: str) -> tuple[pd.DataFrame, pd.DataFra
     return measurement, reference
 
 
-# DO POPRAWY
 def calculate_mean_squared_err(measurement: pd.DataFrame, reference: pd.DataFrame, choice=None):
     reference = reference.values.tolist()
     mse = []
@@ -60,7 +34,7 @@ def calculate_mean_squared_err(measurement: pd.DataFrame, reference: pd.DataFram
         value = mean_squared_error([measurement[i][0], measurement[i][1]], [
             reference[i][0], reference[i][1]])
         mse.append(math.sqrt(value))
-    return np.sort(mse)
+    return np.sort(mse) * 10000
 
 
 if __name__ == '__main__':
@@ -84,60 +58,52 @@ if __name__ == '__main__':
 
     # UTWORZENIE SIECI I WARSTW
     network = tf.keras.models.Sequential()
-    network.add(tf.keras.layers.Dense(512, activation='relu'))
-    network.add(tf.keras.layers.Dropout(0.2))
-    network.add(tf.keras.layers.Dense(256, activation='relu'))
-    network.add(tf.keras.layers.Dropout(0.2))
-    network.add(tf.keras.layers.Dense(128, activation='relu'))
-    network.add(tf.keras.layers.Dropout(0.2))
-    network.add(tf.keras.layers.Dense(64, activation='relu'))
-    network.add(tf.keras.layers.Dense(32, activation='relu'))
-    network.add(tf.keras.layers.Dense(16, activation='relu'))
-    network.add(tf.keras.layers.Dense(8, activation='relu'))
-    network.add(tf.keras.layers.Dense(2, activation='sigmoid'))
+    network.add(tf.keras.layers.Dense(10, activation='relu'))
+    network.add(tf.keras.layers.Dense(5, activation='elu'))
+    network.add(tf.keras.layers.Dense(2, activation='selu'))
+
 
     # KOMPILACJA SIECI PRZY POMOCY OPTYMALIZATORA "ADAM"
     network.compile(optimizer=tf.keras.optimizers.Adam(),
                     loss=tf.keras.losses.MeanSquaredError(),
                     metrics=['accuracy'])
 
-    EarlyStop = tf.keras.callbacks.EarlyStopping(monitor='val_loss',
-                              patience=5,
+    # STWORZENIE EARLYSTOPPING, KTÓRY ZATRZYMA PROGRAM, JEŚLI TEN PRZESTANIE SIĘ UCZYĆ
+    early_stop = EarlyStopping(monitor='loss',
+                              patience=3,
+                              min_delta=0.0000001,
                               verbose=1)
-
     # NAUCZANIE SIECI PRZY POMOCY DANYCH STATYCZNYCH
-    history = network.fit(measurement, reference, epochs=15,
-                verbose=1, batch_size=256,
-                callbacks= [EarlyStop])
-
-    network.evaluate(dynamic_measurement, dynamic_reference, batch_size=512)
-
-    # WYRYSOWANIE WYKRESÓW POMOCNICZYCH
-    draw_curves(history, key1='accuracy', ylim1=(0.9, 1.0),
-                key2='loss', ylim2=(0.0, 0.005))
+    network.fit(measurement, reference,
+                          epochs=100,
+                          verbose=1,
+                          callbacks=[early_stop])
 
     # WYPRINTOWANIE WAG NEURONÓW
-    weights = network.layers[0].get_weights()[0]
     print("\nWAGI:\n")
-    print(weights)
+    for x in range(0, 3):
+       print("\nWarstwa nr ", x+1, "\n")
+       print(network.layers[x].get_weights()[0])
 
-    # POBRANIE REZULTATU I OBLICZENIE BŁĘDU
+
+    # WYKONANIE PREDYKCJI I OBLICZENIE BŁĘDU
     result = network.predict(dynamic_measurement)
-    result = result * 10000
-
-    error_mlp = calculate_mean_squared_err(result, reference, choice="result")
-    error_meas = calculate_mean_squared_err(measurement, reference)
-    print("Mean square error of the measured values =",
-          sum(error_meas) / len(error_meas))
-    print("Mean square error of the corrected values =",
-          sum(error_mlp) / len(error_mlp))
-    print(
-        "Arithmetic mean of the input weights [measurement / reference] =", np.mean(weights, axis=1))
+    result = result
+    error_mlp = calculate_mean_squared_err(result, dynamic_reference,
+                                           choice="result")
+    error_meas = calculate_mean_squared_err(dynamic_measurement, dynamic_reference)
 
     # ZAPISANIE DANYCH DO PLIKU XLSX
-    result = pd.DataFrame(result)
-    result.to_excel('results.xlsx', engine='xlsxwriter')
+    error_mlp = pd.DataFrame(error_mlp)
+    error_mlp.to_excel("results/dis_error.xlsx", engine='xlsxwriter')
 
-    # WYPISANIE WYNIKÓW
-    print("\nWYNIKI:\n")
-    print(result)
+    #NARYSOWANIE WYKRESU DYSTRYBUNATY BŁĘDU DANYCH
+    for errors, label in zip([error_mlp, error_meas], ["Dane filtrowane", "Dane niefiltrowane"]):
+        x = 1. * np.arange(len(errors)) / (len(errors) - 1)
+        plt.plot(errors, x, label=label)
+    plt.legend()
+    plt.xlim(0, 2000)
+    plt.ylim(0, 1)
+    plt.savefig("results/dis_error.jpg")
+    plt.show()
+
